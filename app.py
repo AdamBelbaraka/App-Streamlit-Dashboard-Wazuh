@@ -280,8 +280,8 @@ def main() -> None:
     default_start = today - timedelta(days=7)
 
     st.sidebar.header("Connexion")
-    manager_url = st.sidebar.text_input("Wazuh Manager URL", value="https://192.168.100.10:55000")
-    indexer_url = st.sidebar.text_input("Wazuh Indexer URL", value="https://192.168.100.10:9200")
+    manager_url = st.sidebar.text_input("Wazuh Manager URL", value="https://192.168.100.11:55000")
+    indexer_url = st.sidebar.text_input("Wazuh Indexer URL", value="https://192.168.100.11:9200")
     verify_tls = st.sidebar.checkbox("Vérifier TLS", value=False)
 
     manager_user = st.sidebar.text_input("Manager user", value=os.getenv("WAZUH_MANAGER_USER", ""))

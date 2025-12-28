@@ -12,7 +12,7 @@ Application Streamlit pour interroger Wazuh Manager et Wazuh Indexer (OpenSearch
 
 ## Prérequis
 - Ubuntu Server avec Python 3.9+.
-- Accès réseau au Wazuh Manager (`https://192.168.100.10:55000` par défaut) et au Wazuh Indexer (`https://192.168.100.10:9200` par défaut).
+- Accès réseau au Wazuh Manager (`https://192.168.100.11:55000` par défaut) et au Wazuh Indexer (`https://192.168.100.11:9200` par défaut).
 
 ## Installation
 ```bash
@@ -36,6 +36,7 @@ Vous pouvez aussi saisir les mots de passe dans l'interface Streamlit (champs ma
 ```bash
 streamlit run app.py --server.address 0.0.0.0 --server.port 8501
 ```
+L'application sera accessible via l'adresse IP du serveur Ubuntu (ex. `http://192.168.100.10:8501`).
 
 ## Utilisation
 1. Dans la barre latérale, saisissez les URLs/ports, utilisateurs et (optionnellement) les mots de passe.
