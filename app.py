@@ -1,5 +1,6 @@
 import os
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -401,6 +402,22 @@ def main() -> None:
         st.dataframe(df[existing_cols], use_container_width=True, height=380)
 
         render_charts(df)
+
+    # Ressource ML : notebook complet de classification de sévérité
+    notebook_path = Path(__file__).parent / "notebooks" / "wazuh_ml_severity_classification.py"
+    if notebook_path.exists():
+        with st.expander("Notebook ML : classification de sévérité (LogReg / RF / XGBoost)"):
+            st.markdown(
+                "Notebook prêt à l'emploi pour entraîner et comparer Logistic Regression, Random Forest et XGBoost "
+                "sur un dataset Wazuh (colonnes comme dans l'export CSV). Placez votre fichier dans `data/wazuh_logs.csv` "
+                "et exécutez le notebook pour obtenir le meilleur modèle et les métriques."
+            )
+            st.download_button(
+                "Télécharger le notebook Python",
+                data=notebook_path.read_text(encoding="utf-8"),
+                file_name="wazuh_ml_severity_classification.py",
+                mime="text/x-python",
+            )
 
 
 if __name__ == "__main__":

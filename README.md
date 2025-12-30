@@ -9,6 +9,7 @@ Application Streamlit pour interroger Wazuh Manager et Wazuh Indexer (OpenSearch
 - Graphiques Plotly interactifs : top MITRE, volume temporel, répartition par agent, top descriptions de règle.
 - Export CSV (dossier `./exports/` + téléchargement direct) avec pagination pour de gros volumes.
 - Cache Streamlit pour les chargements répétés.
+- Notebook ML fourni : classification de sévérité (Logistic Regression, Random Forest, XGBoost) avec préprocessing, tuning et sauvegarde du meilleur modèle.
 
 ## Prérequis
 - Ubuntu Server avec Python 3.9+.
@@ -37,6 +38,11 @@ Vous pouvez aussi saisir les mots de passe dans l'interface Streamlit (champs ma
 streamlit run app.py --server.address 0.0.0.0 --server.port 8501
 ```
 L'application sera accessible via l'adresse IP du serveur Ubuntu (ex. `http://192.168.100.10:8501`).
+
+## Notebook ML : classification de sévérité
+- Fichier : `notebooks/wazuh_ml_severity_classification.py`
+- Placez votre dataset exporté dans `data/wazuh_logs.csv` (mêmes colonnes que l'export CSV).
+- Le notebook entraîne et compare Logistic Regression, Random Forest et XGBoost, génère des métriques, et sauvegarde le meilleur modèle (`models/best_severity_model.joblib`) ainsi que les métriques (`models/severity_metrics.json`).
 
 ## Utilisation
 1. Dans la barre latérale, saisissez les URLs/ports, utilisateurs et (optionnellement) les mots de passe.
