@@ -78,6 +78,16 @@ def prepare_dataframe(hits: List[Dict[str, Any]]) -> pd.DataFrame:
     df["rule.mitre.id"] = df["rule.mitre.id"].apply(lambda vals: vals if isinstance(vals, list) else [])
     df["rule.mitre.id_str"] = df["rule.mitre.id"].apply(lambda vals: ";".join(vals))
     df["@timestamp"] = pd.to_datetime(df["@timestamp"], errors="coerce")
+
+    # Auto-étiquetage de la sévérité si rule.level est présent
+    if "rule.level" in df.columns and "severity" not in df.columns:
+        level_numeric = pd.to_numeric(df["rule.level"], errors="coerce")
+        severity = pd.Series(["low"] * len(df), index=df.index)
+        severity[level_numeric.between(0, 3, inclusive="both")] = "low"
+        severity[level_numeric.between(4, 6, inclusive="both")] = "medium"
+        severity[level_numeric.between(7, 10, inclusive="both")] = "high"
+        severity[level_numeric.between(11, 15, inclusive="both")] = "critical"
+        df["severity"] = severity
     return df
 
 
@@ -396,6 +406,7 @@ def main() -> None:
             "rule.id",
             "rule.description",
             "rule.level",
+            "severity",
             "rule.mitre.id_str",
             "data.win.eventdata.commandLine",
         ]
@@ -413,7 +424,19 @@ def main() -> None:
                     result: TrainingResult = train_severity_models(df)
                     st.success(f"Modèle entraîné : {result.best_model_name}")
                     st.write("Métriques (f1_macro, accuracy, balanced_accuracy) :")
-                    st.dataframe(pd.DataFrame(result.metrics), use_container_width=True)
+                    metrics_df = pd.DataFrame(result.metrics)
+                    st.dataframe(metrics_df, use_container_width=True)
+                    if not metrics_df.empty:
+                        fig_metrics = px.bar(
+                            metrics_df,
+                            x="model",
+                            y="f1_macro",
+                            color="accuracy",
+                            color_continuous_scale=[PRIMARY_COLOR, PRIMARY_COLOR],
+                            title="Comparaison des modèles (F1 macro)",
+                        )
+                        fig_metrics.update_layout(template="plotly_white")
+                        st.plotly_chart(fig_metrics, use_container_width=True)
                     st.download_button(
                         "Télécharger le modèle (PKL)",
                         data=result.model_bytes,
