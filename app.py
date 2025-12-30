@@ -8,6 +8,7 @@ import plotly.express as px
 import streamlit as st
 
 from indexer_client import DEFAULT_INDEX_PATTERN, WazuhIndexerClient
+from ml_model import TrainingResult, train_severity_models
 from wazuh_client import WazuhManagerClient
 
 st.set_page_config(page_title="Wazuh → Dataset ML", layout="wide")
@@ -403,21 +404,26 @@ def main() -> None:
 
         render_charts(df)
 
-    # Ressource ML : notebook complet de classification de sévérité
-    notebook_path = Path(__file__).parent / "notebooks" / "wazuh_ml_severity_classification.py"
-    if notebook_path.exists():
-        with st.expander("Notebook ML : classification de sévérité (LogReg / RF / XGBoost)"):
-            st.markdown(
-                "Notebook prêt à l'emploi pour entraîner et comparer Logistic Regression, Random Forest et XGBoost "
-                "sur un dataset Wazuh (colonnes comme dans l'export CSV). Placez votre fichier dans `data/wazuh_logs.csv` "
-                "et exécutez le notebook pour obtenir le meilleur modèle et les métriques."
-            )
-            st.download_button(
-                "Télécharger le notebook Python",
-                data=notebook_path.read_text(encoding="utf-8"),
-                file_name="wazuh_ml_severity_classification.py",
-                mime="text/x-python",
-            )
+        st.markdown("<div class='section-title'>Modèle ML : classification de sévérité</div>", unsafe_allow_html=True)
+        if "severity" not in df.columns:
+            st.info("La colonne 'severity' n'est pas présente dans les alertes chargées. Ajoutez-la pour entraîner un modèle.")
+        else:
+            train_button = st.button("Entraîner et évaluer le modèle (LogReg / RF / XGBoost)", type="primary")
+            if train_button:
+                with st.spinner("Entraînement du modèle en cours..."):
+                    try:
+                        result: TrainingResult = train_severity_models(df)
+                        st.success(f"Modèle entraîné : {result.best_model_name}")
+                        st.write("Métriques (f1_macro, accuracy, balanced_accuracy) :")
+                        st.dataframe(pd.DataFrame(result.metrics), use_container_width=True)
+                        st.download_button(
+                            "Télécharger le modèle (PKL)",
+                            data=result.model_bytes,
+                            file_name="best_severity_model.pkl",
+                            mime="application/octet-stream",
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"Erreur pendant l'entraînement : {exc}")
 
 
 if __name__ == "__main__":
