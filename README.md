@@ -10,6 +10,7 @@ Application Streamlit pour interroger Wazuh Manager et Wazuh Indexer (OpenSearch
 - Export CSV (dossier `./exports/` + téléchargement direct) avec pagination pour de gros volumes.
 - Cache Streamlit pour les chargements répétés.
 - Notebook ML fourni : classification de sévérité (Logistic Regression, Random Forest, XGBoost) avec préprocessing, tuning et sauvegarde du meilleur modèle.
+- Entraînement ML intégré : les alertes chargées peuvent être utilisées pour entraîner et télécharger un modèle PKL de classification de sévérité ; si la colonne `severity` est absente, elle est dérivée automatiquement depuis `rule.level`.
 
 ## Prérequis
 - Ubuntu Server avec Python 3.9+.

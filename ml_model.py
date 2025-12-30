@@ -26,6 +26,14 @@ except Exception:  # pragma: no cover - optional dependency
 
 SEED = 42
 
+SEVERITY_RULES: Tuple[Tuple[int, int, str], ...] = (
+    (0, 3, "low"),
+    (4, 6, "medium"),
+    (7, 10, "high"),
+    (11, 15, "critical"),
+)
+DEFAULT_SEVERITY = "low"
+
 
 @dataclass
 class TrainingResult:
@@ -44,7 +52,17 @@ def _clean_text(series: pd.Series) -> pd.Series:
 
 def _prepare_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, List[str], List[str], List[str], List[str]]:
     if "severity" not in df.columns:
-        raise ValueError("La colonne 'severity' est requise pour entraîner le modèle.")
+        if "rule.level" not in df.columns:
+            raise ValueError("Ajoutez 'severity' ou 'rule.level' pour entraîner le modèle.")
+        levels_numeric = pd.to_numeric(df["rule.level"], errors="coerce")
+        severity = pd.Series([DEFAULT_SEVERITY] * len(levels_numeric), index=levels_numeric.index)
+        for min_level, max_level, label in SEVERITY_RULES:
+            mask = levels_numeric.between(min_level, max_level, inclusive="both")
+            severity.loc[mask] = label
+        df = df.copy()
+        df["severity"] = severity
+    else:
+        df = df.copy()
 
     sev = df["severity"].astype(str).str.lower().str.strip()
     mapping = {"low": "low", "medium": "medium", "med": "medium", "high": "high", "critical": "critical", "crit": "critical"}
