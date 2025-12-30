@@ -9,8 +9,7 @@ Application Streamlit pour interroger Wazuh Manager et Wazuh Indexer (OpenSearch
 - Graphiques Plotly interactifs : top MITRE, volume temporel, répartition par agent, top descriptions de règle.
 - Export CSV (dossier `./exports/` + téléchargement direct) avec pagination pour de gros volumes.
 - Cache Streamlit pour les chargements répétés.
-- Notebook ML fourni : classification de sévérité (Logistic Regression, Random Forest, XGBoost) avec préprocessing, tuning et sauvegarde du meilleur modèle.
-- Entraînement ML intégré : les alertes chargées peuvent être utilisées pour entraîner et télécharger un modèle PKL de classification de sévérité ; si la colonne `severity` est absente, elle est dérivée automatiquement depuis `rule.level`.
+- Entraînement ML intégré : les alertes chargées peuvent être utilisées pour entraîner et télécharger un modèle PKL/Joblib de classification de sévérité ; si la colonne `severity` est absente, elle est dérivée automatiquement depuis `rule.level` (0-3 low, 4-6 medium, 7-10 high, 11-15 critical).
 
 ## Prérequis
 - Ubuntu Server avec Python 3.9+.
@@ -39,6 +38,11 @@ Vous pouvez aussi saisir les mots de passe dans l'interface Streamlit (champs ma
 streamlit run app.py --server.address 0.0.0.0 --server.port 8501
 ```
 L'application sera accessible via l'adresse IP du serveur Ubuntu (ex. `http://192.168.100.10:8501`).
+
+## Entraînement du modèle de sévérité
+- Chargez les données via l'indexer puis cliquez sur **Entraîner modèle severity** (bouton dans la sidebar).
+- La sévérité est auto-ajoutée depuis `rule.level` si absente.
+- Les modèles Logistic Regression, Random Forest et XGBoost (si installé) sont comparés ; le meilleur est sauvegardé dans `./models/best_severity_model_<timestamp>.joblib` et téléchargeable dans l'UI. Les métriques sont enregistrées dans `./models/severity_metrics_<timestamp>.json`.
 
 ## Notebook ML : classification de sévérité
 - Fichier : `notebooks/wazuh_ml_severity_classification.py`

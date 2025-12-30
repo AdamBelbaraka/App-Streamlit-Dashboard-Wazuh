@@ -1,7 +1,9 @@
 import io
 import json
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Tuple
 
 import joblib
 import numpy as np
@@ -12,8 +14,20 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
-from sklearn.model_selection import GroupKFold, RandomizedSearchCV, StratifiedKFold, TimeSeriesSplit, train_test_split
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+)
+from sklearn.model_selection import (
+    GroupKFold,
+    RandomizedSearchCV,
+    StratifiedKFold,
+    TimeSeriesSplit,
+    train_test_split,
+)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
 from sklearn.utils.class_weight import compute_class_weight
@@ -22,7 +36,6 @@ try:
     import xgboost as xgb
 except Exception:  # pragma: no cover - optional dependency
     xgb = None
-
 
 SEED = 42
 
@@ -34,13 +47,32 @@ SEVERITY_RULES: Tuple[Tuple[int, int, str], ...] = (
 )
 DEFAULT_SEVERITY = "low"
 
+ProgressFn = Callable[[str, Optional[float]], None]
+
 
 @dataclass
-class TrainingResult:
+class TrainingArtifacts:
     best_model_name: str
     metrics: List[Dict[str, float]]
-    model_bytes: bytes
+    confusion_matrix: List[List[int]]
     class_labels: List[str]
+    classification_report: str
+    model_bytes: bytes
+    model_path: Path
+    metrics_path: Path
+
+
+def label_severity(df: pd.DataFrame) -> pd.DataFrame:
+    result = df.copy()
+    if "severity" in result.columns:
+        return result
+    levels = pd.to_numeric(result.get("rule.level"), errors="coerce")
+    severity = pd.Series([DEFAULT_SEVERITY] * len(result), index=result.index)
+    for min_level, max_level, label in SEVERITY_RULES:
+        mask = levels.between(min_level, max_level, inclusive="both")
+        severity.loc[mask] = label
+    result["severity"] = severity
+    return result
 
 
 def _clean_text(series: pd.Series) -> pd.Series:
@@ -50,38 +82,19 @@ def _clean_text(series: pd.Series) -> pd.Series:
     return cleaned
 
 
-def _prepare_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, List[str], List[str], List[str], List[str]]:
-    if "severity" not in df.columns:
-        if "rule.level" not in df.columns:
-            raise ValueError("Ajoutez 'severity' ou 'rule.level' pour entraîner le modèle.")
-        levels_numeric = pd.to_numeric(df["rule.level"], errors="coerce")
-        severity = pd.Series([DEFAULT_SEVERITY] * len(levels_numeric), index=levels_numeric.index)
-        for min_level, max_level, label in SEVERITY_RULES:
-            mask = levels_numeric.between(min_level, max_level, inclusive="both")
-            severity.loc[mask] = label
-        df = df.copy()
-        df["severity"] = severity
-    else:
-        df = df.copy()
-
-    sev = df["severity"].astype(str).str.lower().str.strip()
-    mapping = {"low": "low", "medium": "medium", "med": "medium", "high": "high", "critical": "critical", "crit": "critical"}
-    sev = sev.map(mapping)
-    valid = {"low", "medium", "high", "critical"}
-    mask_valid = sev.isin(valid)
-    df = df.loc[mask_valid].copy()
-    df["severity"] = sev[mask_valid]
-
-    text_candidates = ["rule.description", "data.win.eventdata.commandLine", "raw", "rule.mitre.id"]
-    cat_candidates = ["agent.name", "location", "agent.id", "rule.id"]
-    num_candidates = []
+def prepare_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, List[str], List[str], List[str], List[str]]:
+    df = label_severity(df)
 
     if "@timestamp" in df.columns:
         ts = pd.to_datetime(df["@timestamp"], errors="coerce")
+        df["_ts"] = ts
         df["hour"] = ts.dt.hour
         df["dayofweek"] = ts.dt.dayofweek
         df["month"] = ts.dt.month
-        num_candidates.extend(["hour", "dayofweek", "month"])
+
+    text_candidates = ["rule.description", "raw", "data.win.eventdata.commandLine", "rule.mitre.id"]
+    cat_candidates = ["agent.name", "location"]
+    num_candidates = ["hour", "dayofweek", "month"]
 
     existing_cols = set(df.columns)
     text_cols = [c for c in text_candidates if c in existing_cols]
@@ -91,36 +104,13 @@ def _prepare_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, List[s
     for c in text_cols:
         df[c] = _clean_text(df[c])
 
-    if "raw" in df.columns:
-        patterns = [
-            r'"level"\s*:\s*\d+',
-            r"'level'\s*:\s*\d+",
-            r'"severity"\s*:\s*"[a-zA-Z]+"',
-            r"'severity'\s*:\s*'[a-zA-Z]+'",
-            r'"rule"\s*:\s*\{[^}]*"level"\s*:\s*\d+[^}]*\}',
-            r"'rule'\s*:\s*\{[^}]*'level'\s*:\s*\d+[^}]*\}",
-        ]
-        raw_series = df["raw"].astype(str)
-        for pat in patterns:
-            raw_series = raw_series.str.replace(pat, "<MASK>", regex=True)
-        df["raw"] = raw_series
-
-    subset = [c for c in ["rule.id", "raw", "rule.description"] if c in df.columns]
-    if subset:
-        df = df.drop_duplicates(subset=subset).reset_index(drop=True)
-
-    max_card = 50
-    kept_cat = []
-    for c in cat_cols:
-        if df[c].nunique(dropna=True) <= max_card:
-            kept_cat.append(c)
-    cat_cols = kept_cat
-
     feature_cols = text_cols + cat_cols + num_cols
     if not feature_cols:
         raise ValueError("Aucune colonne exploitable pour entraîner le modèle.")
 
-    return df[feature_cols].copy(), df["severity"].copy(), text_cols, cat_cols, num_cols, feature_cols
+    X = df[feature_cols].copy()
+    y = df["severity"].astype(str)
+    return X, y, text_cols, cat_cols, num_cols, feature_cols
 
 
 def _build_preprocessors(text_cols: List[str], cat_cols: List[str], num_cols: List[str]) -> Tuple[ColumnTransformer, ColumnTransformer]:
@@ -154,9 +144,6 @@ def _build_preprocessors(text_cols: List[str], cat_cols: List[str], num_cols: Li
         transformers_scaled.append(("num", num_pipeline_scaled, num_cols))
         transformers_plain.append(("num", num_pipeline_plain, num_cols))
 
-    if not transformers_scaled:
-        raise ValueError("Aucun transformateur construit. Vérifiez les colonnes.")
-
     return ColumnTransformer(transformers_scaled), ColumnTransformer(transformers_plain)
 
 
@@ -164,7 +151,7 @@ def _to_dense_matrix(x):
     return x.toarray() if hasattr(x, "toarray") else x
 
 
-def _evaluate_model(model, X_te, y_te, label: str) -> Dict[str, float]:
+def _evaluate_model(model, X_te, y_te, label: str, class_labels: List[str]) -> Dict[str, float]:
     preds = model.predict(X_te)
     return {
         "model": label,
@@ -175,9 +162,10 @@ def _evaluate_model(model, X_te, y_te, label: str) -> Dict[str, float]:
     }
 
 
-def train_severity_models(df: pd.DataFrame) -> TrainingResult:
-    X, y, text_cols, cat_cols, num_cols, feature_cols = _prepare_features(df)
-
+def train_severity_models(df: pd.DataFrame, reporter: Optional[ProgressFn] = None) -> TrainingArtifacts:
+    reporter = reporter or (lambda msg, pct=None: None)
+    reporter("Préparation des features...", 0.05)
+    X, y, text_cols, cat_cols, num_cols, feature_cols = prepare_features(df)
     preprocess_scaled, preprocess_plain = _build_preprocessors(text_cols, cat_cols, num_cols)
 
     if "_ts" in df.columns and df["_ts"].notna().any():
@@ -189,20 +177,26 @@ def train_severity_models(df: pd.DataFrame) -> TrainingResult:
         X_test, y_test = test_df[feature_cols], test_df["severity"]
         cv = TimeSeriesSplit(n_splits=3)
         cv_splits = list(cv.split(X_train))
+        reporter("Split temporel (80/20) + TimeSeriesSplit", 0.1)
     else:
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=SEED, stratify=y)
         if "rule.id" in df.columns:
             groups_train = df.loc[X_train.index, "rule.id"]
             cv = GroupKFold(n_splits=3)
             cv_splits = list(cv.split(X_train, y_train, groups=groups_train))
+            reporter("Split stratifié + GroupKFold(rule.id)", 0.1)
         else:
             cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=SEED)
             cv_splits = cv
+            reporter("Split stratifié + StratifiedKFold", 0.1)
 
+    class_labels = sorted(y.unique())
+
+    reporter("Entraînement Logistic Regression...", 0.2)
     logreg_base = Pipeline(
         [
             ("preprocess", preprocess_scaled),
-            ("clf", LogisticRegression(max_iter=1500, class_weight="balanced", solver="liblinear")),
+            ("clf", LogisticRegression(max_iter=1500, class_weight="balanced", solver="lbfgs", multi_class="auto")),
         ]
     )
     logreg_base.fit(X_train, y_train)
@@ -212,12 +206,7 @@ def train_severity_models(df: pd.DataFrame) -> TrainingResult:
             ("preprocess", preprocess_scaled),
             (
                 "clf",
-                LogisticRegression(
-                    max_iter=1200,
-                    class_weight="balanced",
-                    penalty="l2",
-                    solver="liblinear",
-                ),
+                LogisticRegression(max_iter=1200, class_weight="balanced", penalty="l2", solver="lbfgs", multi_class="auto"),
             ),
         ]
     )
@@ -234,6 +223,7 @@ def train_severity_models(df: pd.DataFrame) -> TrainingResult:
     )
     logreg_search.fit(X_train, y_train)
 
+    reporter("Entraînement Random Forest...", 0.45)
     rf = Pipeline(
         [
             ("preprocess", preprocess_plain),
@@ -241,11 +231,11 @@ def train_severity_models(df: pd.DataFrame) -> TrainingResult:
             (
                 "clf",
                 RandomForestClassifier(
-                    n_estimators=60,
+                    n_estimators=80,
                     max_depth=8,
                     min_samples_leaf=8,
                     min_samples_split=16,
-                    max_features=0.3,
+                    max_features=0.4,
                     bootstrap=True,
                     class_weight="balanced_subsample",
                     random_state=SEED,
@@ -268,6 +258,7 @@ def train_severity_models(df: pd.DataFrame) -> TrainingResult:
 
     xgb_search = None
     if xgb is not None:
+        reporter("Entraînement XGBoost...", 0.7)
         classes = np.unique(y_train)
         class_weights = compute_class_weight(class_weight="balanced", classes=classes, y=y_train)
         weight_map = {cls: w for cls, w in zip(classes, class_weights)}
@@ -277,7 +268,7 @@ def train_severity_models(df: pd.DataFrame) -> TrainingResult:
             objective="multi:softprob",
             num_class=len(classes),
             random_state=SEED,
-            n_estimators=60,
+            n_estimators=80,
             max_depth=4,
             learning_rate=0.2,
             subsample=0.7,
@@ -311,7 +302,10 @@ def train_severity_models(df: pd.DataFrame) -> TrainingResult:
             verbose=0,
         )
         xgb_search.fit(X_train, y_train, clf__sample_weight=sample_weight)
+    else:
+        reporter("XGBoost non installé : étape ignorée.", 0.7)
 
+    reporter("Évaluation des modèles...", 0.85)
     candidates = [
         ("LogReg baseline", logreg_base),
         ("LogReg tuned", logreg_search.best_estimator_),
@@ -324,24 +318,44 @@ def train_severity_models(df: pd.DataFrame) -> TrainingResult:
     best_model = None
     best_score = -1.0
     best_name = ""
+    best_preds = None
     for name, model in candidates:
-        metrics = _evaluate_model(model, X_test, y_test, name)
+        metrics = _evaluate_model(model, X_test, y_test, name, class_labels)
         results.append(metrics)
         if metrics["f1_macro"] > best_score:
             best_score = metrics["f1_macro"]
             best_model = model
             best_name = name
+            best_preds = model.predict(X_test)
 
     if best_model is None:
         raise RuntimeError("Impossible de sélectionner un modèle gagnant.")
+
+    cm = confusion_matrix(y_test, best_preds, labels=class_labels).tolist()
+    report = classification_report(y_test, best_preds, target_names=class_labels)
+
+    reporter("Sauvegarde du meilleur modèle...", 0.95)
+    models_dir = Path("models")
+    models_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    model_path = models_dir / f"best_severity_model_{timestamp}.joblib"
+    metrics_path = models_dir / f"severity_metrics_{timestamp}.json"
+
+    joblib.dump(best_model, model_path)
+    metrics_path.write_text(json.dumps(results, indent=2))
 
     buffer = io.BytesIO()
     joblib.dump(best_model, buffer)
     buffer.seek(0)
 
-    return TrainingResult(
+    reporter("Terminé.", 1.0)
+    return TrainingArtifacts(
         best_model_name=best_name,
         metrics=results,
+        confusion_matrix=cm,
+        class_labels=class_labels,
+        classification_report=report,
         model_bytes=buffer.read(),
-        class_labels=sorted(y.unique()),
+        model_path=model_path,
+        metrics_path=metrics_path,
     )

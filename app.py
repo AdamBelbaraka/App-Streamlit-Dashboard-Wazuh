@@ -5,10 +5,11 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import plotly.express as px
+import plotly.figure_factory as ff
 import streamlit as st
 
 from indexer_client import DEFAULT_INDEX_PATTERN, WazuhIndexerClient
-from ml_model import TrainingResult, train_severity_models
+from ml_training import TrainingArtifacts, train_severity_models
 from wazuh_client import WazuhManagerClient
 
 st.set_page_config(page_title="Wazuh → Dataset ML", layout="wide")
@@ -329,6 +330,7 @@ def main() -> None:
     test_button = st.sidebar.button("Tester connexion")
     load_button = st.sidebar.button("Charger données")
     export_button = st.sidebar.button("Exporter CSV")
+    train_button = st.sidebar.button("Entraîner modèle severity")
 
     dt_range = build_datetime_range(date_range) or (
         datetime.combine(default_start, time.min),
@@ -416,35 +418,60 @@ def main() -> None:
         render_charts(df)
 
         st.markdown("<div class='section-title'>Modèle ML : classification de sévérité</div>", unsafe_allow_html=True)
-        train_button = st.button("Entraîner et évaluer le modèle (LogReg / RF / XGBoost)", type="primary")
         st.caption("Si la colonne 'severity' est absente, elle sera dérivée automatiquement depuis rule.level.")
         if train_button:
-            with st.spinner("Entraînement du modèle en cours..."):
-                try:
-                    result: TrainingResult = train_severity_models(df)
-                    st.success(f"Modèle entraîné : {result.best_model_name}")
-                    st.write("Métriques (f1_macro, accuracy, balanced_accuracy) :")
-                    metrics_df = pd.DataFrame(result.metrics)
-                    st.dataframe(metrics_df, use_container_width=True)
-                    if not metrics_df.empty:
-                        fig_metrics = px.bar(
-                            metrics_df,
-                            x="model",
-                            y="f1_macro",
-                            color="accuracy",
-                            color_continuous_scale=[PRIMARY_COLOR, PRIMARY_COLOR],
-                            title="Comparaison des modèles (F1 macro)",
-                        )
-                        fig_metrics.update_layout(template="plotly_white")
-                        st.plotly_chart(fig_metrics, use_container_width=True)
-                    st.download_button(
-                        "Télécharger le modèle (PKL)",
-                        data=result.model_bytes,
-                        file_name="best_severity_model.pkl",
-                        mime="application/octet-stream",
+            progress = st.progress(0)
+            status = st.empty()
+            try:
+                def report(msg: str, pct: float | None = None) -> None:
+                    status.info(msg)
+                    if pct is not None:
+                        progress.progress(min(max(pct, 0.0), 1.0))
+
+                result: TrainingArtifacts = train_severity_models(df, reporter=report)
+                progress.progress(1.0)
+                status.success(f"Modèle entraîné : {result.best_model_name}")
+
+                st.write("Métriques (f1_macro, accuracy, balanced_accuracy) :")
+                metrics_df = pd.DataFrame(result.metrics)
+                st.dataframe(metrics_df, use_container_width=True)
+                if not metrics_df.empty:
+                    fig_metrics = px.bar(
+                        metrics_df,
+                        x="model",
+                        y="f1_macro",
+                        color="accuracy",
+                        color_continuous_scale=[PRIMARY_COLOR, PRIMARY_COLOR],
+                        title="Comparaison des modèles (F1 macro)",
                     )
-                except Exception as exc:  # noqa: BLE001
-                    st.error(f"Erreur pendant l'entraînement : {exc}")
+                    fig_metrics.update_layout(template="plotly_white", showlegend=False)
+                    st.plotly_chart(fig_metrics, use_container_width=True)
+
+                # Confusion matrix for best model
+                cm_fig = ff.create_annotated_heatmap(
+                    z=result.confusion_matrix,
+                    x=result.class_labels,
+                    y=result.class_labels,
+                    colorscale=[[0, "#e8f5e9"], [1, PRIMARY_COLOR]],
+                    showscale=True,
+                )
+                cm_fig.update_layout(title="Matrice de confusion (meilleur modèle)", template="plotly_white")
+                st.plotly_chart(cm_fig, use_container_width=True)
+
+                with st.expander("Classification report"):
+                    st.text(result.classification_report)
+
+                st.download_button(
+                    "Télécharger le modèle (PKL)",
+                    data=result.model_bytes,
+                    file_name=result.model_path.name,
+                    mime="application/octet-stream",
+                )
+                st.caption(f"Fichier sauvegardé dans {result.model_path} — métriques : {result.metrics_path}")
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Erreur pendant l'entraînement : {exc}")
+                progress.progress(0)
+                status.error("Échec de l'entraînement.")
 
 
 if __name__ == "__main__":
